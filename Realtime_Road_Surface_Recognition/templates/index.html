@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>路面實時辨識系統</title>
+</head>
+<body>
+    <h1>路面實時辨識</h1>
+    <video id="video" width="640" height="480" autoplay muted></video>
+    <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+    <img id="output" width="640" height="480" alt="推論結果"/>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const output = document.getElementById('output');
+
+        // 啟用手機鏡頭
+        navigator.mediaDevices.getUserMedia({ video: true })
+            .then(stream => video.srcObject = stream)
+            .catch(err => console.error(err));
+
+        video.addEventListener('play', () => {
+            const ctx = canvas.getContext('2d');
+            setInterval(() => {
+                // 擷取當前影格
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(blob => {
+                    const formData = new FormData();
+                    formData.append('image', blob, 'frame.jpg');
+                    fetch('/predict', { method: 'POST', body: formData })
+                        .then(response => response.json())
+                        .then(data => {
+                            output.src = 'data:image/jpeg;base64,' + data.image;
+                        })
+                        .catch(err => console.error(err));
+                }, 'image/jpeg');
+            }, 200); // 每200ms推送一次
+        });
+    </script>
+</body>
+</html>

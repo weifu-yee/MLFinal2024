@@ -1,0 +1,10 @@
+archive/
+ckpt/
+ckpt1/
+resluts/
+video_results/
+*.mp4
+*.pth
+*.jpg
+*.jpeg
+__pycache__/
