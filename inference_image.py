@@ -3,20 +3,18 @@
 
 # # Image as input
 
-# In[ ]:
-
-
 import os
 import torch
 from PIL import Image, ImageDraw, ImageFont
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.transforms import functional as F
+
 
 # ===== HARD-CODED PARAMETERS =====
 IMAGE_FOLDER = r"archive/dataset/dataset/test/images"
 OUTPUT_FOLDER = r"results"
-CHECKPOINT_PATH = r"faster_rcnn_epoch_1.pth"
+CHECKPOINT_PATH = r"ckpt/faster_rcnn_epoch_50.pth"
 NUM_CLASSES = 4  # 包含 background
 LABELS = ["background", "pothole", "cracks", "open_manhole"]
 THRESHOLD = 0.5
@@ -27,7 +25,13 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 IMG_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp'}
 
 def get_model(num_classes, checkpoint_path=None, device='cpu'):
-    model = fasterrcnn_resnet50_fpn(pretrained=False)
+    # model = fasterrcnn_resnet50_fpn(pretrained=False)
+    # in_features = model.roi_heads.box_predictor.cls_score.in_features
+    # model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+    
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = fasterrcnn_resnet50_fpn(weights=weights)
+    num_classes = 4  # 3 classes (pothole, cracks, open_manhole) + 1 background
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 

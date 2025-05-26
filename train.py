@@ -1,19 +1,22 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 ## Declarate Dataset
 import torch
 import torchvision
 from torch.utils.data import DataLoader
-from torchvision.models.detection import fasterrcnn_resnet50_fpn
+from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.ops import box_iou # 用於計算 IoU
 from torchvision.transforms import functional as F
 from pycocotools.coco import COCO
 import os
 from PIL import Image
 from tqdm import tqdm
+import json
+
+# IO Parameter to control debug messages
+VERBOSE = True # 設定為 True 來印出偵錯訊息，False 則關閉
 
 class COCODataset(torch.utils.data.Dataset):
     def __init__(self, annotation_file, image_dir, transforms=None):
@@ -47,9 +50,10 @@ class COCODataset(torch.utils.data.Dataset):
         if len(boxes) == 0:  # Handle no annotations
             boxes = torch.zeros((0, 4), dtype=torch.float32)
             labels = torch.zeros((0,), dtype=torch.int64)
+        else:
+            boxes = torch.as_tensor(boxes, dtype=torch.float32)
+            labels = torch.as_tensor(labels, dtype=torch.int64)
 
-        boxes = torch.as_tensor(boxes, dtype=torch.float32)
-        labels = torch.as_tensor(labels, dtype=torch.int64)
         target = {
             "boxes": boxes,
             "labels": labels,
@@ -61,20 +65,14 @@ class COCODataset(torch.utils.data.Dataset):
 
         return image, target
 
-
-# In[ ]:
-
-
 ## Declarate DataLoader
-from torch.utils.data import DataLoader
-
 # Define paths
 train_annotation_file = 'archive/train_annotations1.json'
 val_annotation_file = 'archive/valid_annotations1.json'
 train_image_dir = 'archive/dataset/dataset/train/images'
 val_image_dir = 'archive/dataset/dataset/valid/images'
 
-# Define transformations (Optional, can be expanded as needed)
+# Define transformations
 def get_transform():
     return torchvision.transforms.Compose([
         torchvision.transforms.ToTensor()
@@ -87,16 +85,11 @@ val_dataset = COCODataset(val_annotation_file, val_image_dir, transforms=get_tra
 # DataLoaders
 def collate_fn(batch):
     return tuple(zip(*batch))
+
 train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0, collate_fn=collate_fn)
 val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
-
-# In[3]:
-
-
 ## Loading the pre-trained Faster R-CNN model
-from torchvision.models.detection import fasterrcnn_resnet50_fpn, FasterRCNN_ResNet50_FPN_Weights
-from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 # Load a pre-trained Faster R-CNN model
 weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
 model = fasterrcnn_resnet50_fpn(weights=weights)
@@ -107,17 +100,10 @@ model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 # Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
-print(f"Using device: {device}")
+if VERBOSE:
+    print(f"Using device: {device}")
 
-
-# In[4]:
-
-
-## Validata data
-import os
-import json
-from PIL import Image
-
+## Validate data
 def validate_data(image_dir, annotation_file):
     # Load annotations from the JSON file
     with open(annotation_file) as f:
@@ -133,7 +119,8 @@ def validate_data(image_dir, annotation_file):
             missing_images.append(image_file)
 
     if missing_images:
-        print(f"Missing images: {missing_images}")
+        if VERBOSE:
+            print(f"Missing images: {missing_images}")
         return False
 
     # Check if all bounding boxes are valid
@@ -144,31 +131,24 @@ def validate_data(image_dir, annotation_file):
             invalid_bboxes.append(annotation['id'])
 
     if invalid_bboxes:
-        print(f"Invalid bounding boxes for annotations: {invalid_bboxes}")
+        if VERBOSE:
+            print(f"Invalid bounding boxes for annotations: {invalid_bboxes}")
         return False
-
-    print("Data validation successful!")
+    
+    if VERBOSE:
+        print(f"Data validation successful for {annotation_file}!")
     return True
-
-# Define paths for your data
-train_annotation_file = 'archive/train_annotations1.json'
-val_annotation_file = 'archive/valid_annotations1.json'
-train_image_dir = 'archive/dataset/dataset/train/images'
-val_image_dir = 'archive/dataset/dataset/valid/images'
 
 # Validate train and validation data
 if not validate_data(train_image_dir, train_annotation_file):
     print("Training data validation failed. Please check your images and annotations.")
+    exit() # Exit if validation fails
 elif not validate_data(val_image_dir, val_annotation_file):
     print("Validation data validation failed. Please check your images and annotations.")
+    exit() # Exit if validation fails
 else:
-    print("Starting training...")
-    # Proceed with training after successful data validation
-    model.train()  # Make sure your model is in training mode
-
-
-# In[ ]:
-
+    if VERBOSE:
+        print("Data validation successful. Starting training...")
 
 ## Define one epoch training and validation functions
 def train_one_epoch(model, optimizer, data_loader, device):
@@ -182,97 +162,135 @@ def train_one_epoch(model, optimizer, data_loader, device):
 
         # Forward pass
         loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
 
-        # Sum all losses in the loss_dict
-        if isinstance(loss_dict, list):
-            losses = sum(loss for loss in loss_dict)  # Don't use .item(), keep it as a tensor
-        else:
-            losses = sum(loss for loss in loss_dict.values())  # Same here
-
-        losses.backward()  # Now losses is a tensor, so backward() can be called
-        optimizer.step()  # Update the weights
-        epoch_loss += losses.item()  # Add the loss to the epoch's loss (convert to float here for reporting)
+        losses.backward()
+        optimizer.step()
+        epoch_loss += losses.item()
 
     avg_epoch_loss = epoch_loss / len(data_loader)
     return avg_epoch_loss
 
-def validate_one_epoch(model, data_loader, device):
+def validate_one_epoch(model, data_loader, device, iou_threshold=0.5, score_threshold=0.5):
     model.eval()
     epoch_loss = 0.0
+    total_correctly_predicted_images = 0
+    total_images_processed = 0
+
     with torch.no_grad():
-        for batch_idx, (images, targets) in enumerate(data_loader):
-            # 移到 GPU
-            images = [img.to(device) for img in images]
-            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        for batch_idx, (images, targets_batch) in tqdm(enumerate(data_loader), desc="Validation", total=len(data_loader)):
+            images_gpu = [img.to(device) for img in images]
+            # For loss calculation, targets need to be on device
+            targets_gpu = [{k: v.to(device) for k, v in t.items()} for t in targets_batch]
 
-            # forward
-            loss_dict = model(images, targets)
+            # Get losses
+            loss_dict = model(images_gpu, targets_gpu)
+            
+            if VERBOSE and batch_idx == 0: # Print loss structure for the first batch if VERBOSE
+                print(f"[Validation Batch {batch_idx}] loss_dict type: {type(loss_dict)}")
+                if isinstance(loss_dict, dict):
+                    for name, tensor in loss_dict.items():
+                        print(f"  {name}: {tensor.shape if hasattr(tensor, 'shape') else type(tensor)}")
+            
+            current_batch_loss = sum(loss for loss in loss_dict.values())
+            epoch_loss += current_batch_loss.item()
 
-            # 列印 loss_dict 型態
-            print(f"[Batch {batch_idx}] loss_dict type: {type(loss_dict)}")
+            # Get predictions for accuracy calculation
+            # model(images_gpu) returns predictions when targets are not provided or in eval mode without targets
+            # However, to keep it simple, we use the same call and then extract predictions if needed.
+            # For FasterRCNN, model(images) in eval mode returns list of dicts (boxes, labels, scores)
+            predictions = model(images_gpu) # Get predictions
 
-            # 如果是 dict，就列出 key 和 shape；如果是 list，就對每個 dict 做同樣的事
-            if isinstance(loss_dict, dict):
-                for name, tensor in loss_dict.items():
-                    print(f"  {name}: {tensor.shape}")
-                # sum 所有 losses
-                losses = sum(t.sum() for t in loss_dict.values())
+            for i in range(len(images)):
+                pred_boxes = predictions[i]['boxes'].cpu()
+                pred_scores = predictions[i]['scores'].cpu()
+                pred_labels = predictions[i]['labels'].cpu()
+                
+                gt_boxes = targets_batch[i]['boxes'].cpu()
+                gt_labels = targets_batch[i]['labels'].cpu()
 
-            elif isinstance(loss_dict, list):
-                for idx, d in enumerate(loss_dict):
-                    print(f"  loss_dict[{idx}] keys: {list(d.keys())}")
-                    for name, tensor in d.items():
-                        print(f"    {name}: {tensor.shape}")
-                losses = sum(t.sum() for d in loss_dict for t in d.values())
+                image_has_correct_detection = False
+                
+                if len(gt_boxes) == 0: # No ground truth objects
+                    if len(pred_boxes) == 0 : # No predictions either
+                         image_has_correct_detection = True
+                    # else: some predictions, all are false positives, so image_has_correct_detection remains False
+                
+                elif len(pred_boxes) > 0 : # There are predictions and ground truth objects
+                    for pred_idx in range(len(pred_boxes)):
+                        if pred_scores[pred_idx] < score_threshold:
+                            continue
 
-            else:
-                raise TypeError(f"Unexpected loss_dict type: {type(loss_dict)}")
+                        found_match_for_pred = False
+                        for gt_idx in range(len(gt_boxes)):
+                            if pred_labels[pred_idx] == gt_labels[gt_idx]:
+                                iou = box_iou(pred_boxes[pred_idx].unsqueeze(0), gt_boxes[gt_idx].unsqueeze(0))
+                                if iou.item() > iou_threshold:
+                                    image_has_correct_detection = True
+                                    found_match_for_pred = True
+                                    break # Matched this gt box, move to next pred box or finish image
+                        if image_has_correct_detection and found_match_for_pred: # Optimization: if one good pred found, image is correct
+                             break 
+                
+                if image_has_correct_detection:
+                    total_correctly_predicted_images += 1
+            
+            total_images_processed += len(images)
 
-            # 確認最終 scalar loss
-            print(f"  summed loss: {losses.item()}\n")
-
-            epoch_loss += losses.item()
 
     avg_loss = epoch_loss / len(data_loader)
-    print(f"Average validation loss: {avg_loss:.6f}")
-    return avg_loss
-
-
-# In[ ]:
-
+    accuracy = total_correctly_predicted_images / total_images_processed if total_images_processed > 0 else 0.0
+    
+    if VERBOSE:
+        print(f"Average validation loss: {avg_loss:.6f}")
+        print(f"Validation accuracy: {accuracy:.4f} ({total_correctly_predicted_images}/{total_images_processed})")
+        
+    return avg_loss, accuracy
 
 ## Declarate optimizer and learning rate scheduler
-optimizer = torch.optim.SGD(model.parameters(), lr=0.005, momentum=0.9, weight_decay=0.0005)
+params = [p for p in model.parameters() if p.requires_grad]
+optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
 lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
-optimizer.zero_grad()
-
-
-# In[ ]:
-
 
 ## Train the model
-# check if using GPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-print(f"Using device: {device}")
+if VERBOSE:
+    print(f"Using device for training: {device}")
 
-num_epochs = 10
+num_epochs = 10 # 您可以調整 epoch 數量
+best_val_accuracy = -1.0 # 初始化最佳準確率
+best_model_path = "best_model.pth"
+
 for epoch in range(num_epochs):
     print(f"Epoch {epoch + 1}/{num_epochs}")
+    print("-" * 20)
 
     train_loss = train_one_epoch(model, optimizer, train_loader, device)
-    val_loss = validate_one_epoch(model, val_loader, device)
+    val_loss, val_accuracy = validate_one_epoch(model, val_loader, device)
 
-    # Step the parameters
-    optimizer.step()
-    # Zero the gradients
-    optimizer.zero_grad()
-    # Step the learning rate scheduler
-    lr_scheduler.step()
+    lr_scheduler.step() # Step the learning rate scheduler
 
-    print(f"Train Loss: {train_loss:.4f}, Validation Loss: {val_loss:.4f}")
+    print(f"Epoch {epoch + 1} Summary:")
+    print(f"  Train Loss: {train_loss:.4f}")
+    print(f"  Validation Loss: {val_loss:.4f}")
+    print(f"  Validation Accuracy: {val_accuracy:.4f}")
 
-    # Save model checkpoint
-    torch.save(model.state_dict(), f"faster_rcnn_epoch_{epoch + 1}.pth")
-    print(f"Model saved for epoch {epoch + 1}")
+    # Save model checkpoint for the current epoch
+    epoch_save_path = f"faster_rcnn_epoch_{epoch + 1}.pth"
+    torch.save(model.state_dict(), epoch_save_path)
+    if VERBOSE:
+        print(f"Model saved for epoch {epoch + 1} to {epoch_save_path}")
+
+    # Check if this is the best model based on validation accuracy
+    if val_accuracy > best_val_accuracy:
+        best_val_accuracy = val_accuracy
+        torch.save(model.state_dict(), best_model_path)
+        if VERBOSE:
+            print(f"*** New best model saved with accuracy: {best_val_accuracy:.4f} to {best_model_path} ***")
+    
+print("Training finished.")
+if best_val_accuracy != -1.0:
+    print(f"Best validation accuracy achieved: {best_val_accuracy:.4f}")
+    print(f"Best model saved to: {best_model_path}")
+else:
+    print("No best model was saved (perhaps validation accuracy did not improve).")
 
