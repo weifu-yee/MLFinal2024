@@ -57,7 +57,18 @@ def predict(model, image, device, threshold=0.5):
 
 def draw_boxes(image, boxes, labels, scores, category_names=None, text_scale=3.0):
     draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default()
+    # font = ImageFont.load_default()
+    
+    # 1. 定義一個 base_size（像素），再乘上 text_scale 得到實際字體大小
+    base_size = 12
+    font_size = int(base_size * text_scale)
+    # 2. 載入一支 TrueType 字型 (這裡以 arial.ttf 為例，實際要改成你的字型路徑)
+    try:
+        font = ImageFont.truetype("arial.ttf", font_size)
+    except IOError:
+        # 如果找不到 arial.ttf，就 fallback 回 load_default
+        font = ImageFont.load_default()
+    
     for box, label, score in zip(boxes, labels, scores):
         x1, y1, x2, y2 = box.tolist()
         draw.rectangle([x1, y1, x2, y2], outline="red", width=2)
@@ -66,7 +77,7 @@ def draw_boxes(image, boxes, labels, scores, category_names=None, text_scale=3.0
         text_width = text_bbox[2] - text_bbox[0]
         text_height = text_bbox[3] - text_bbox[1]
         draw.rectangle([x1, y1 - text_height, x1 + text_width, y1], fill="red")
-        draw.text((x1, y1 - text_height), text, fill="white", font=font, spacing=4*text_scale)
+        draw.text((x1, y1 - text_height), text, fill="white", font=font)
     return image
 
 

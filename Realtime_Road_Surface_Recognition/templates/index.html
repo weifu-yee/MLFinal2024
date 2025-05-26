@@ -34,8 +34,9 @@
     const classesDiv = document.getElementById('classes');
 
     const VERBOSE = false; // 是否啟用詳細日誌
-    const FRAME_RATE = 10; // 每秒擷取幾次
-    
+    const FRAME_RATE = 100; // 每秒擷取幾次
+    const INTERVAL = 1000 / FRAME_RATE;
+
     let ctx = null;
 
     function log(msg) {
@@ -84,40 +85,48 @@
       log(`canvas 設定為 ${canvas.width}×${canvas.height}`);
     });
 
-    // 開始擷取並送 frame
-    video.addEventListener('play', () => {
-      if (!ctx || canvas.height===0) {
-        log('canvas 尚未初始化，跳過擷取');
-        return;
-      }
-      log('開始擷取並送出 Base64');
-      setInterval(() => {
-        // 繪製縮圖
+
+    async function sendFrameLoop() {
+        if (video.paused || !ctx) {
+            // 要是暫停或還沒初始化，等下一次再檢查
+            setTimeout(sendFrameLoop, INTERVAL);
+            return;
+        }
+
+        // 1. 拍一張
         ctx.drawImage(
-          video,
-          0,0, video.videoWidth, video.videoHeight,
-          0,0, canvas.width, canvas.height
+            video,
+            0,0, video.videoWidth, video.videoHeight,
+            0,0, canvas.width, canvas.height
         );
-        // 轉成 Base64
         const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-        log('sending Base64 to /predict');
-        // 包成 JSON 傳送
-        fetch(BASE + '/predict', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: dataUrl })
-        })
-        .then(r => {
-          log(`predict 回應: ${r.status}`);
-          return r.json();
-        })
-        .then(d => {
-          log(`收到結果 base64 長度: ${d.image.length}`);
-          output.src = 'data:image/jpeg;base64,' + d.image;
-          classesDiv.textContent = 'Classes: ' + (d.classes || []).join(', ');
-        })
-        .catch(e => log('fetch error: '+e.message));
-      }, 1000 / FRAME_RATE);
+
+        // 2. 送出並等結果
+        const start = performance.now();
+        try {
+            const res = await fetch(BASE + '/predict', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl })
+            });
+            const d = await res.json();
+
+            // 更新畫面
+            output.src = 'data:image/jpeg;base64,' + d.image;
+            classesDiv.textContent = 'Classes: ' + (d.classes || []).join(', ');
+        } catch (e) {
+            console.error('predict error', e);
+        }
+
+        // 3. 根據推論耗時算下一次 delay
+        const elapsed = performance.now() - start;
+        const delay = Math.max(0, INTERVAL - elapsed);
+        setTimeout(sendFrameLoop, delay);
+    }
+
+    // 開始
+    video.addEventListener('play', () => {
+        sendFrameLoop();
     });
   </script>
 </body>
