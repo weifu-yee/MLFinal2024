@@ -55,7 +55,7 @@ def predict(model, image, device, threshold=0.5):
     return boxes, labels, scores
 
 
-def draw_boxes(image, boxes, labels, scores, category_names=None):
+def draw_boxes(image, boxes, labels, scores, category_names=None, text_scale=3.0):
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default()
     for box, label, score in zip(boxes, labels, scores):
@@ -66,7 +66,7 @@ def draw_boxes(image, boxes, labels, scores, category_names=None):
         text_width = text_bbox[2] - text_bbox[0]
         text_height = text_bbox[3] - text_bbox[1]
         draw.rectangle([x1, y1 - text_height, x1 + text_width, y1], fill="red")
-        draw.text((x1, y1 - text_height), text, fill="white", font=font)
+        draw.text((x1, y1 - text_height), text, fill="white", font=font, spacing=4*text_scale)
     return image
 
 

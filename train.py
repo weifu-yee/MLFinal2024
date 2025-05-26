@@ -172,80 +172,143 @@ def train_one_epoch(model, optimizer, data_loader, device):
     return avg_epoch_loss
 
 def validate_one_epoch(model, data_loader, device, iou_threshold=0.5, score_threshold=0.5):
-    model.eval()
+    model.eval()  # 將模型設置為評估模式
     epoch_loss = 0.0
     total_correctly_predicted_images = 0
     total_images_processed = 0
 
-    with torch.no_grad():
+    with torch.no_grad():  # 在評估過程中不計算梯度
         for batch_idx, (images, targets_batch) in tqdm(enumerate(data_loader), desc="Validation", total=len(data_loader)):
+            # 將圖像和目標轉移到指定設備 (GPU/CPU)
             images_gpu = [img.to(device) for img in images]
-            # For loss calculation, targets need to be on device
             targets_gpu = [{k: v.to(device) for k, v in t.items()} for t in targets_batch]
 
-            # Get losses
-            loss_dict = model(images_gpu, targets_gpu)
-            
-            if VERBOSE and batch_idx == 0: # Print loss structure for the first batch if VERBOSE
-                print(f"[Validation Batch {batch_idx}] loss_dict type: {type(loss_dict)}")
-                if isinstance(loss_dict, dict):
-                    for name, tensor in loss_dict.items():
-                        print(f"  {name}: {tensor.shape if hasattr(tensor, 'shape') else type(tensor)}")
-            
-            current_batch_loss = sum(loss for loss in loss_dict.values())
-            epoch_loss += current_batch_loss.item()
+            # --- 開始: 損失計算 (整合使用者提供的片段邏輯) ---
+            # 前向傳播以獲取損失 (此時傳遞了 targets)
+            loss_dict_output = model(images_gpu, targets_gpu)
 
-            # Get predictions for accuracy calculation
-            # model(images_gpu) returns predictions when targets are not provided or in eval mode without targets
-            # However, to keep it simple, we use the same call and then extract predictions if needed.
-            # For FasterRCNN, model(images) in eval mode returns list of dicts (boxes, labels, scores)
-            predictions = model(images_gpu) # Get predictions
+            current_batch_loss_tensor = None
 
-            for i in range(len(images)):
+            if VERBOSE:
+                print(f"\n[Validation Batch {batch_idx}] loss_dict_output type: {type(loss_dict_output)}")
+
+            if isinstance(loss_dict_output, dict):
+                if VERBOSE:
+                    print("  loss_dict_output is a dictionary. Losses:")
+                    for name, tensor in loss_dict_output.items():
+                        # tensor.sum().item() 用於確保張量被加總（如果它不是純量）然後取其 Python 純量值
+                        print(f"    Key: {name}, Shape: {tensor.shape}, Value: {tensor.sum().item():.4f}")
+                # 加總所有損失。對每個損失張量調用 .sum() 以處理其可能不是純量的情況。
+                current_batch_loss_tensor = sum(t.sum() for t in loss_dict_output.values())
+            
+            elif isinstance(loss_dict_output, list): # 處理使用者片段中提到的 list of dicts 的情況
+                if VERBOSE:
+                    print("  loss_dict_output is a list of dictionaries.")
+                
+                temp_losses = []
+                for i, d_item in enumerate(loss_dict_output):
+                    if isinstance(d_item, dict):
+                        if VERBOSE:
+                            print(f"  Item {i} in list (is a dict):")
+                            for name, tensor in d_item.items():
+                                print(f"    Key: {name}, Shape: {tensor.shape}, Value: {tensor.sum().item():.4f}")
+                        temp_losses.extend([t.sum() for t in d_item.values()])
+                    else:
+                        # 如果列表中的元素不是字典，則引發錯誤或進行其他處理
+                        # 為了與使用者片段的結構保持一致，這裡假設列表中的元素總是字典
+                        # 如果 torch 模型回傳 list of tensors (而不是 list of dicts of tensors)
+                        # 這部分邏輯需要調整
+                        if VERBOSE:
+                            print(f"  Item {i} in list is NOT a dict, type: {type(d_item)}. This item will be skipped for loss summation unless handled.")
+                        # 根據實際情況，您可能需要引發錯誤或以不同方式處理此情況
+                        # For now, we'll only sum if it's a list of dicts of tensors
+                
+                if temp_losses: # 確保 temp_losses 非空
+                    current_batch_loss_tensor = sum(temp_losses)
+                else: # 如果列表為空或不包含可加總的損失
+                    current_batch_loss_tensor = torch.tensor(0.0).to(device) # 設為0損失
+                    if VERBOSE:
+                        print("  Warning: loss_dict_output was a list, but no summable losses found.")
+
+            else:
+                # 對於非 dict 或非 list 的未知型態
+                raise TypeError(f"Unexpected loss_dict_output type: {type(loss_dict_output)} in validation. Expected dict or list of dicts.")
+
+            if VERBOSE and current_batch_loss_tensor is not None:
+                print(f"  Summed batch loss for this item: {current_batch_loss_tensor.item():.4f}\n")
+            
+            if current_batch_loss_tensor is not None:
+                epoch_loss += current_batch_loss_tensor.item()
+            # --- 結束: 損失計算 ---
+
+
+            # --- 開始: 準確率計算 (保留先前版本的功能) ---
+            # 為了計算準確率，我們需要模型的預測輸出 (不傳遞 targets)
+            predictions = model(images_gpu) # 注意：這會再次執行前向傳播
+
+            for i in range(len(images_gpu)): # 迭代處理批次中的每張圖片
                 pred_boxes = predictions[i]['boxes'].cpu()
                 pred_scores = predictions[i]['scores'].cpu()
                 pred_labels = predictions[i]['labels'].cpu()
                 
-                gt_boxes = targets_batch[i]['boxes'].cpu()
-                gt_labels = targets_batch[i]['labels'].cpu()
+                # 從 targets_batch (CPU上原始的) 或 targets_gpu (GPU上的，需轉回CPU) 獲取真實框
+                # targets_batch[i] 是原始的，在 collate_fn 之前，可能還未轉換為張量或已在 dataset 中轉換
+                # 這裡我們使用 targets_batch，假設它包含CPU上的張量或可以轉換的數據
+                gt_boxes = targets_batch[i]['boxes'].cpu() # 確保在CPU上
+                gt_labels = targets_batch[i]['labels'].cpu() # 確保在CPU上
 
                 image_has_correct_detection = False
                 
-                if len(gt_boxes) == 0: # No ground truth objects
-                    if len(pred_boxes) == 0 : # No predictions either
+                if len(gt_boxes) == 0: # 如果圖片中沒有真實物件
+                    if len(pred_boxes) == 0 : # 模型也沒有預測任何物件
                          image_has_correct_detection = True
-                    # else: some predictions, all are false positives, so image_has_correct_detection remains False
+                    # 否則 (有預測但無真實物件)，所有預測都是誤報，image_has_correct_detection 保持 False
                 
-                elif len(pred_boxes) > 0 : # There are predictions and ground truth objects
+                elif len(pred_boxes) > 0 : # 如果有預測物件且有真實物件
+                    # 用於標記真實框是否已被匹配，以避免一個真實框匹配多個預測框 (對於此簡化準確率而言非必需，但良好實踐)
+                    # matched_gt = [False] * len(gt_boxes) # 如果需要更複雜的匹配邏輯
+
                     for pred_idx in range(len(pred_boxes)):
                         if pred_scores[pred_idx] < score_threshold:
-                            continue
+                            continue # 跳過低於分數閾值的預測
 
-                        found_match_for_pred = False
+                        # 檢查此預測是否與任何真實物件匹配
+                        # (一個簡化的檢查：只要有一個預測物件正確，就認為圖片檢測正確)
+                        # (更複雜的 mAP 計算會逐個匹配)
+                        found_match_for_this_pred = False
                         for gt_idx in range(len(gt_boxes)):
-                            if pred_labels[pred_idx] == gt_labels[gt_idx]:
+                            if pred_labels[pred_idx] == gt_labels[gt_idx]: # 檢查類別是否匹配
+                                # 計算 IoU
                                 iou = box_iou(pred_boxes[pred_idx].unsqueeze(0), gt_boxes[gt_idx].unsqueeze(0))
                                 if iou.item() > iou_threshold:
-                                    image_has_correct_detection = True
-                                    found_match_for_pred = True
-                                    break # Matched this gt box, move to next pred box or finish image
-                        if image_has_correct_detection and found_match_for_pred: # Optimization: if one good pred found, image is correct
+                                    image_has_correct_detection = True # 標記圖片有正確檢測
+                                    found_match_for_this_pred = True
+                                    break # 此預測框已找到匹配的真實框，跳出內層迴圈
+                        
+                        if image_has_correct_detection and found_match_for_this_pred: 
+                             # 如果圖片已被標記為正確檢測 (因為此預測框找到了匹配)
+                             # 就可以跳出外層預測框迴圈，處理下一張圖片
                              break 
                 
                 if image_has_correct_detection:
                     total_correctly_predicted_images += 1
             
-            total_images_processed += len(images)
+            total_images_processed += len(images_gpu) # 更新已處理的圖片總數
+            # --- 結束: 準確率計算 ---
 
-
-    avg_loss = epoch_loss / len(data_loader)
+    avg_epoch_loss = epoch_loss / len(data_loader) if len(data_loader) > 0 else 0.0
     accuracy = total_correctly_predicted_images / total_images_processed if total_images_processed > 0 else 0.0
     
+    # 這裡的 VERBOSE 控制整體驗證摘要的打印
     if VERBOSE:
-        print(f"Average validation loss: {avg_loss:.6f}")
-        print(f"Validation accuracy: {accuracy:.4f} ({total_correctly_predicted_images}/{total_images_processed})")
+        print(f"\n--- Validation Epoch Summary ---")
+        print(f"Average Validation Loss: {avg_epoch_loss:.4f}")
+        print(f"Validation Accuracy: {accuracy:.4f} ({total_correctly_predicted_images}/{total_images_processed} images correctly predicted)")
+        print(f"--- End of Validation Epoch Summary ---\n")
+    else: # 即使不是 VERBOSE，也打印關鍵指標
+        print(f"Validation Results: Avg Loss: {avg_epoch_loss:.4f}, Accuracy: {accuracy:.4f}")
         
-    return avg_loss, accuracy
+    return avg_epoch_loss, accuracy
 
 ## Declarate optimizer and learning rate scheduler
 params = [p for p in model.parameters() if p.requires_grad]
