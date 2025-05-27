@@ -11,8 +11,11 @@ This repository contains code and resources for road surface defect detection us
 
 - [`Realtime_Road_Surface_Recognition/`](Realtime_Road_Surface_Recognition/): Main project code (Flask server, inference, web UI, etc.)
 - `archive/`, `OLD_FILES/`: Legacy files and datasets (not required for main usage)
-- `ckpt/`, `ckpt1/`: Model checkpoints
-- `*.ipynb`: Notebooks for training and inference
+- `ckpt/`: Model checkpoints
+- `train.py`: Code for training the model.
+- `inference_image.py`: Script for running inference on single images.
+- `inference_video.py`: Script for running inference on video streams or files.
+
 
 ## Notes
 
@@ -39,3 +42,16 @@ python app.py
 > **Note:**  
 > Remember to replace `<server-ip>` with your actual server's IP address.  
 > You must use **https** (not http) to allow your phone's camera to be accessible in the web interface.
+
+## flowchart
+```mermaid
+flowchart TD
+    A[開始] --> B[擷取影片影格]
+    B --> C[繪製至 Canvas]
+    C --> D[轉成 Base64 編碼]
+    D --> E[POST 請求至 /predict]
+    E --> F[等待後端回應]
+    F --> G[解析回傳的影像 & classes]
+    G --> H[更新畫面顯示結果]
+    H --> B[下一影格]
+```

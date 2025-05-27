@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-## Declarate Dataset
 import torch
 import torchvision
 from torch.utils.data import DataLoader
@@ -16,7 +15,7 @@ from tqdm import tqdm
 import json
 
 # IO Parameter to control debug messages
-VERBOSE = False # 設定為 True 來印出偵錯訊息，False 則關閉
+VERBOSE = False  # 設定為 True 來印出偵錯訊息，False 則關閉
 
 class COCODataset(torch.utils.data.Dataset):
     def __init__(self, annotation_file, image_dir, transforms=None):
@@ -65,45 +64,32 @@ class COCODataset(torch.utils.data.Dataset):
 
         return image, target
 
-## Declarate DataLoader
-# Define paths
-train_annotation_file = 'archive/train_annotations1.json'
-val_annotation_file = 'archive/valid_annotations1.json'
-train_image_dir = 'archive/dataset/dataset/train/images'
-val_image_dir = 'archive/dataset/dataset/valid/images'
-
-# Define transformations
-def get_transform():
-    return torchvision.transforms.Compose([
-        torchvision.transforms.ToTensor()
-    ])
-
-# Create datasets
-train_dataset = COCODataset(train_annotation_file, train_image_dir, transforms=get_transform())
-val_dataset = COCODataset(val_annotation_file, val_image_dir, transforms=get_transform())
-
-# DataLoaders
 def collate_fn(batch):
     return tuple(zip(*batch))
 
-train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=0, collate_fn=collate_fn)
-val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=0, collate_fn=collate_fn)
+def get_transform():
+    from torchvision import transforms
+    return transforms.Compose([
+        transforms.ToTensor()
+    ])
 
-## Loading the pre-trained Faster R-CNN model
-# Load a pre-trained Faster R-CNN model
-weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
-model = fasterrcnn_resnet50_fpn(weights=weights)
-num_classes = 4  # 3 classes (pothole, cracks, open_manhole) + 1 background
-in_features = model.roi_heads.box_predictor.cls_score.in_features
-model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
 
-# Device setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-if VERBOSE:
-    print(f"Using device: {device}")
+def train_one_epoch(model, optimizer, data_loader, device):
+    model.train()
+    epoch_loss = 0
+    for images, targets in tqdm(data_loader, desc="Training"):
+        images = [img.to(device) for img in images]
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-## Validate data
+        optimizer.zero_grad()
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+        losses.backward()
+        optimizer.step()
+        epoch_loss += losses.item()
+
+    return epoch_loss / len(data_loader)
+
 def validate_data(image_dir, annotation_file):
     # Load annotations from the JSON file
     with open(annotation_file) as f:
@@ -139,37 +125,6 @@ def validate_data(image_dir, annotation_file):
         print(f"Data validation successful for {annotation_file}!")
     return True
 
-# Validate train and validation data
-if not validate_data(train_image_dir, train_annotation_file):
-    print("Training data validation failed. Please check your images and annotations.")
-    exit() # Exit if validation fails
-elif not validate_data(val_image_dir, val_annotation_file):
-    print("Validation data validation failed. Please check your images and annotations.")
-    exit() # Exit if validation fails
-else:
-    if VERBOSE:
-        print("Data validation successful. Starting training...")
-
-## Define one epoch training and validation functions
-def train_one_epoch(model, optimizer, data_loader, device):
-    model.train()
-    epoch_loss = 0
-    for images, targets in tqdm(data_loader, desc="Training"):
-        images = [image.to(device) for image in images]
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
-        optimizer.zero_grad()
-
-        # Forward pass
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
-
-        losses.backward()
-        optimizer.step()
-        epoch_loss += losses.item()
-
-    avg_epoch_loss = epoch_loss / len(data_loader)
-    return avg_epoch_loss
 
 def validate_one_epoch(model, data_loader, device, iou_threshold=0.5, score_threshold=0.5):
     model.eval()  # 將模型設置為評估模式
@@ -310,50 +265,58 @@ def validate_one_epoch(model, data_loader, device, iou_threshold=0.5, score_thre
         
     return avg_epoch_loss, accuracy
 
-## Declarate optimizer and learning rate scheduler
-params = [p for p in model.parameters() if p.requires_grad]
-optimizer = torch.optim.SGD(params, lr=0.005, momentum=0.9, weight_decay=0.0005)
-lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
 
-## Train the model
-if VERBOSE:
-    print(f"Using device for training: {device}")
+if __name__ == "__main__":
+    # Define paths
+    train_annotation_file = 'archive/train_annotations1.json'
+    val_annotation_file = 'archive/valid_annotations1.json'
+    train_image_dir = 'archive/dataset/dataset/train/images'
+    val_image_dir = 'archive/dataset/dataset/valid/images'
 
-num_epochs = 10 # 您可以調整 epoch 數量
-best_val_accuracy = -1.0 # 初始化最佳準確率
-best_model_path = "best_model.pth"
+    # Create datasets and loaders
+    train_ds = COCODataset(train_annotation_file, train_image_dir, transforms=get_transform())
+    val_ds = COCODataset(val_annotation_file, val_image_dir, transforms=get_transform())
+    train_loader = DataLoader(train_ds, batch_size=4, shuffle=True, num_workers=0, collate_fn=collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=4, shuffle=False, num_workers=0, collate_fn=collate_fn)
 
-for epoch in range(num_epochs):
-    print(f"Epoch {epoch + 1}/{num_epochs}")
-    print("-" * 20)
+    # Model setup
+    weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT
+    model = fasterrcnn_resnet50_fpn(weights=weights)
+    in_feats = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_feats, num_classes=4)
 
-    train_loss = train_one_epoch(model, optimizer, train_loader, device)
-    val_loss, val_accuracy = validate_one_epoch(model, val_loader, device)
-
-    lr_scheduler.step() # Step the learning rate scheduler
-
-    print(f"Epoch {epoch + 1} Summary:")
-    print(f"  Train Loss: {train_loss:.4f}")
-    print(f"  Validation Loss: {val_loss:.4f}")
-    print(f"  Validation Accuracy: {val_accuracy:.4f}")
-
-    # Save model checkpoint for the current epoch
-    epoch_save_path = f"faster_rcnn_epoch_{epoch + 1}.pth"
-    torch.save(model.state_dict(), epoch_save_path)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
     if VERBOSE:
-        print(f"Model saved for epoch {epoch + 1} to {epoch_save_path}")
+        print(f"Using device: {device}")
 
-    # Check if this is the best model based on validation accuracy
-    if val_accuracy > best_val_accuracy:
-        best_val_accuracy = val_accuracy
-        torch.save(model.state_dict(), best_model_path)
-        if VERBOSE:
-            print(f"*** New best model saved with accuracy: {best_val_accuracy:.4f} to {best_model_path} ***")
-    
-print("Training finished.")
-if best_val_accuracy != -1.0:
-    print(f"Best validation accuracy achieved: {best_val_accuracy:.4f}")
-    print(f"Best model saved to: {best_model_path}")
-else:
-    print("No best model was saved (perhaps validation accuracy did not improve).")
+    # Validate data
+    if not validate_data(train_image_dir, train_annotation_file):
+        print("Training data validation failed.")
+        exit(1)
+    if not validate_data(val_image_dir, val_annotation_file):
+        print("Validation data validation failed.")
+        exit(1)
 
+    # Optimizer and scheduler
+    optimizer = torch.optim.SGD([p for p in model.parameters() if p.requires_grad], lr=0.005, momentum=0.9, weight_decay=0.0005)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+
+    # Training loop
+    epochs = 10
+    best_acc = 0.0
+    for epoch in range(epochs):
+        print(f"Epoch {epoch+1}/{epochs}")
+        train_loss = train_one_epoch(model, optimizer, train_loader, device)
+        val_loss, val_acc = validate_one_epoch(model, val_loader, device)
+        scheduler.step()
+        print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
+
+        # Save best
+        if val_acc > best_acc:
+            best_acc = val_acc
+            torch.save(model.state_dict(), "best_model.pth")
+            if VERBOSE:
+                print(f"*** New best model saved: {best_acc:.4f} ***")
+
+    print("Training finished.")

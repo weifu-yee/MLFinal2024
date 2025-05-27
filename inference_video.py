@@ -18,7 +18,7 @@ from torchvision.transforms import functional as F
 # ===== HARD-CODED PARAMETERS =====
 VIDEO_FOLDER = r"archive/dataset/dataset/test/video"
 OUTPUT_FOLDER = r"video_results"
-CHECKPOINT_PATH = r"faster_rcnn_epoch_1.pth"
+CHECKPOINT_PATH = r"ckpt/faster_rcnn_best.pth"
 NUM_CLASSES = 4  # 包含 background
 LABELS = ["background", "pothole", "cracks", "open_manhole"]
 THRESHOLD = 0.5
